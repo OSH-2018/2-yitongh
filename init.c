@@ -1,5 +1,7 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <sys/types.h>
@@ -22,16 +24,12 @@ int main() {
         /* 拆解命令行 */
         args[0] = cmd;
         for (i = 0; *args[i]; i++)
-            for (args[i + 1] = args[i] + 1; *args[i + 1]; args[i + 1]++) {
-                if (*args[i + 1] == ' ') {
-                    *args[i + 1] = '\0';
-                    /* 清理多余的空格 */
-                    do {
-                        args[i + 1]++;
-                    } while (*args[i + 1] == ' ');
+            for (args[i+1] = args[i] + 1; *args[i+1]; args[i+1]++)
+                if (*args[i+1] == ' ') {
+                    *args[i+1] = '\0';
+                    args[i+1]++;
                     break;
                 }
-            }
         args[i] = NULL;
 
         /* 没有输入命令 */
@@ -56,9 +54,18 @@ int main() {
         pid_t pid = fork();
         if (pid == 0) {
             /* 子进程 */
-            execvp(args[0], args);
-            /* execvp失败 */
-            return 255;
+            if (execvp(args[0], args) == -1) {
+                /* execvp失败 */
+                if (errno == EACCES) {
+                    printf("error: you cannot perform this operation unless you are root.");
+                }
+                else if (errno == ENOEXEC) {
+                    printf("bash: command not found: %s", args[0]);
+                }
+                exit(EXIT_FAILURE);
+            }
+            
+            return EXIT_SUCCESS;
         }
         /* 父进程 */
         wait(NULL);
