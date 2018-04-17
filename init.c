@@ -118,7 +118,7 @@ void exec(char *args[][128], int fildes[2], int now, int pipes)
         if (pid == 0) {
             close(fildes[0]);                       /* Read end is unused */
             dup2(fildes[1], STDOUT_FILENO);
-            //close(fildes[1]);
+            close(fildes[1]);
             if (execvp(args[now][0], args[now]) == -1) {
                 /* execvp失败 */
                 if (errno == EACCES) {
@@ -129,12 +129,11 @@ void exec(char *args[][128], int fildes[2], int now, int pipes)
                 }
                 exit(EXIT_FAILURE);
             }
-            close(fildes[1]);                       /* Child will see EOF */
             exit(EXIT_SUCCESS);
         }
-        //close(fildes[1]);
-        //close(fildes[0]);
+        close(fildes[1]); 
         exec(args, fildes, now + 1, pipes);
+        close(fildes[0]);
         wait(NULL);
         return;
     }
@@ -152,9 +151,10 @@ void exec(char *args[][128], int fildes[2], int now, int pipes)
         if (pid == 0) {
             close(fildes[1]);                       /* Write end is unused */
             dup2(fildes[0], STDIN_FILENO);
+            close(fildes[0]);
             dup2(fildes_other[1], STDOUT_FILENO);
-            //close(fildes_other[1]);
-            //close(fildes[0]);
+            close(fildes_other[1]);
+
             if (execvp(*args[now], args[now]) == -1) {
                 /* execvp失败 */
                 if (errno == EACCES) {
@@ -165,19 +165,22 @@ void exec(char *args[][128], int fildes[2], int now, int pipes)
                 }
                 exit(EXIT_FAILURE);
             }
-            close(fildes[0]);                       /* Finished with pipe */
-            close(fildes_other[1]);
             exit(EXIT_SUCCESS);
         }
+        close(fildes[0]);
+        close(fildes_other[1]);
         exec(args, fildes_other, now + 1, pipes);
+        close(fildes[1]);
+        close(fildes_other[0]);
         wait(NULL);
+        return;
     }
     else if (now == pipes) {
         pid_t pid = fork();
         if (pid == 0) {
             close(fildes[1]);                       /* Write end is unused */
             dup2(fildes[0], STDIN_FILENO);
-            //close(fildes[1]);
+            close(fildes[0]);
             if (execvp(args[now][0], args[now]) == -1) {
                 /* execvp失败 */
                 if (errno == EACCES) {
@@ -188,11 +191,10 @@ void exec(char *args[][128], int fildes[2], int now, int pipes)
                 }
                 exit(EXIT_FAILURE);
             }
-            close(fildes[0]);                       /* Finished with pipe */
             exit(EXIT_SUCCESS);
         }
-        //close(fildes[1]);
-        //close(fildes[0]);
+        close(fildes[0]);
+        close(fildes[1]);
         wait(NULL);
         return;
     }
