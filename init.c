@@ -3,11 +3,30 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <sys/types.h>
 
 #define MAX_PIPE 10
+#define MAX_REDIRECT 10
+
+enum Redirect_flag
+{
+    STDOUT,
+    STDERR,
+    STDOUT_ADD,
+    STDERR_ADD
+};
+
+struct Redirect
+{
+    enum Redirect_flag type[MAX_REDIRECT];      //输出重定向，类型
+    char *file[MAX_REDIRECT];        //输出重定向，文件位置
+    int now; 
+};
+
 void exec(char *args[][128], int fildes[2], int now, int pipes);
+
 int main() {
     /* 输入的命令行 */
     char cmd[256];
@@ -16,6 +35,8 @@ int main() {
 
     while (1) {
         int pipes = 0;          //管道数目
+        struct Redirect out;
+        out.now = -1;
         fflush(stdout);
 
         /* 提示符 */
@@ -43,13 +64,62 @@ int main() {
                     do {
                     args[pipes][i+1]++;
                     } while (*args[pipes][i+1] == ' ' || *args[pipes][i+1] == '\t');
-
                     break;
                 }
-                if (*args[pipes][i+1] == '|') {
+                
+                /* 管道与重定向 */
+                if (*args[pipes][i+1] == '|' || *args[pipes][i + 1] == '>') {
                     break;
                 }
             }
+            /* 重定向 */
+            if (*args[pipes][i + 1] == '1' || *args[pipes][i + 1] == '2'
+                || *args[pipes][i + 1] == '>') {
+                if (*args[pipes][i + 1] == '>') {
+                    out.now++;
+                    out.type[out.now] = STDOUT;
+                    *args[pipes][i + 1] = '\0';
+                    /* 追加重定向 */
+                    if (*(args[pipes][i + 1] + 1) == '>') {
+                        args[pipes][i + 1]++;
+                        out.type[out.now] = STDOUT_ADD;
+                    }
+
+                    /* 消除多余空格 */
+                    do {
+                        args[pipes][i + 1]++;
+                    } while (*args[pipes][i + 1] == ' ' || *args[pipes][i + 1] == '\t');
+
+                    out.file[out.now] = args[pipes][i + 1];
+
+                    i++;
+                    args[pipes][i + 1] = args[pipes][i];
+                    args[pipes][i] = NULL;
+                }
+                else if (*(args[pipes][i + 1] + 1) == '>') {
+
+                    out.now++;
+                    out.type[out.now] = *args[pipes][i + 1] == '1' ? STDOUT : STDERR;
+                    *args[pipes][i + 1] = '\0';
+                    /* 追加重定向 */
+                    if (*(args[pipes][i + 1] + 2) == '>') {
+                        args[pipes][i + 1]++;
+                        out.type[out.now] = out.type[out.now] == STDOUT ? STDOUT_ADD : STDERR_ADD;
+                    }
+                    args[pipes][i + 1]++;
+
+                    /* 消除多余空格 */
+                    do {
+                        args[pipes][i + 1]++;
+                    } while (*args[pipes][i + 1] == ' ' || *args[pipes][i + 1] == '\t');
+                    
+                    out.file[out.now] = args[pipes][i + 1];
+                    i++;
+                    args[pipes][i + 1] = args[pipes][i];
+                    args[pipes][i] = NULL;
+                }
+            }
+            /* 管道 */
             if (*args[pipes][i+1] == '|') {
                 *args[pipes][i+1] = '\0';
                 args[pipes + 1][0] = args[pipes][i+1] + 1;
@@ -67,8 +137,9 @@ int main() {
         if (!args[0][0])
             continue;
 
-        /* 内建命令 */
+        
         if (pipes == 0) {
+            /* 内建命令 */
             if (strcmp(args[pipes][0], "cd") == 0) {
                 if (args[pipes][1]) {
                     if (chdir(args[pipes][1]) == -1) {
@@ -114,9 +185,42 @@ int main() {
             }
             if (strcmp(args[pipes][0], "exit") == 0)
                 return 0;
+
+            /* 外部命令 */
+            pid_t pid = fork();
+            if (pid == 0) {
+                /* 子进程 */
+                for (i = 0; i <= out.now; i++) {
+                    mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;            //文件拥有者有读写权限，组成员和其他人只有读权限
+                    int fd;
+                    if (out.type[i] == STDERR || out.type[i] == STDOUT)
+                        fd = open(out.file[i], O_WRONLY | O_CREAT | O_TRUNC, mode);
+                    else
+                        fd = open(out.file[i], O_WRONLY | O_CREAT | O_APPEND, mode);
+                    if (out.type[i] == STDOUT || out.type[i] == STDOUT_ADD)
+                        dup2(fd, STDOUT_FILENO);
+                    else
+                        dup2(fd, STDERR_FILENO);
+                    close(fd);
+                }
+                if (execvp(args[pipes][0], args[pipes]) == -1) {
+                    /* execvp失败 */
+                    perror(NULL);
+                    exit(EXIT_FAILURE);
+                }
+                exit(EXIT_SUCCESS);
+            }
+            else if (pid == -1) {
+                /* fork失败 */
+                perror(NULL);
+                continue;
+            }
+            /* 父进程 */
+            wait(NULL);
+            continue;
         }
 
-        /*外部命令*/
+        /* 管道命令 */
         int fildes[2];
         int status;
 
@@ -139,27 +243,7 @@ int main() {
 */
 void exec(char *args[][128], int fildes[2], int now, int pipes)
 {
-    if (pipes == 0) {
-        pid_t pid = fork();
-        if (pid == 0) {
-            /* 子进程 */
-            if (execvp(args[pipes][0], args[pipes]) == -1) {
-                /* execvp失败 */
-                perror(NULL);
-                exit(EXIT_FAILURE);
-            }
-            exit(EXIT_SUCCESS);
-        }
-        else if (pid == -1) {
-            /* fork失败 */
-            perror(NULL);
-            return;
-        }
-        /* 父进程 */
-        wait(NULL);
-        return;
-    }
-    else if (now == 0) {
+    if (now == 0) {
         pid_t pid = fork();
         if (pid == 0) {
             close(fildes[0]);                       /* 读入端不用 */
