@@ -10,8 +10,10 @@
 #define MAX_PIPE 10
 #define MAX_REDIRECT 10
 #define MAX_BUFFER 1024
+#define MAX_CMD 1024
+#define MAX_ENV_NAME 256
 
-enum Redirect_flag
+typedef enum Redirect_flag
 {
     STDIN,
     STDOUT,
@@ -19,26 +21,27 @@ enum Redirect_flag
     STDIN_ADD,
     STDOUT_ADD,
     STDERR_ADD
-};
+}Redirect_flag;
 
-struct Redirect
+typedef struct Redirect
 {
-    enum Redirect_flag type[MAX_REDIRECT];      //重定向，类型
+    Redirect_flag type[MAX_REDIRECT];      //重定向，类型
     char *file[MAX_REDIRECT];        //重定向，文件位置
     int now; 
-};
+}Redirect;
 
-void exec(char *args[][128], int fildes[2], int now, int pipes);
+void exec(char *args[][MAX_CMD/2], int fildes[2], int now, int pipes, int fd_out, int fd_err);
+void deal_cmd_env(char *cmd);
 
 int main() {
     /* 输入的命令行 */
-    char cmd[256];
+    char cmd[MAX_CMD];
     /* 命令行拆解成的各部分，以空指针结尾 */
-    char *args[MAX_PIPE][128];
+    char *args[MAX_PIPE][MAX_CMD/2];
 
     while (1) {
         int pipes = 0;          //管道数目
-        struct Redirect redirect_out, redirect_in, redirect_err;
+        Redirect redirect_out, redirect_in, redirect_err;
         redirect_out.now = -1;
         redirect_in.now = -1;
         redirect_err.now = -1;
@@ -72,90 +75,100 @@ int main() {
                     } while (*args[pipes][i+1] == ' ' || *args[pipes][i+1] == '\t');
                     break;
                 }
-                
+                if (*args[pipes][i+1] == '$' || *args[pipes][i+1] == '~')
+                    deal_cmd_env(args[pipes][i+1]);
                 /* 管道与重定向 */
                 if (*args[pipes][i+1] == '|' || *args[pipes][i + 1] == '>' || *args[pipes][i + 1] == '<') {
                     break;
                 }
             }
+            /* $环境变量 */
+            if (*args[pipes][i+1] == '$' || *args[pipes][i+1] == '~')
+                deal_cmd_env(args[pipes][i+1]);
             /* 重定向 */
-            if (*args[pipes][i + 1] == '1' || *args[pipes][i + 1] == '2'
-                || *args[pipes][i + 1] == '>' || *args[pipes][i + 1] == '<') {
-                if (*args[pipes][i + 1] == '<') {
-                    redirect_in.now++;
-                    redirect_in.type[redirect_in.now] = STDIN; 
-                    *args[pipes][i + 1] = '\0';
-                    /* 追加重定向 */
-                    if (*(args[pipes][i + 1] + 1) == '<') {
-                        args[pipes][i + 1]++;
-                        redirect_in.type[redirect_in.now] = STDIN_ADD;
-                    }
-                    /* 消除多余空格 */
-                    do {
-                        args[pipes][i + 1]++;
-                    } while (*args[pipes][i + 1] == ' ' || *args[pipes][i + 1] == '\t');
-
-                    redirect_in.file[redirect_in.now] = args[pipes][i + 1];
-
-                    i++;
-                    args[pipes][i + 1] = args[pipes][i];
-                    args[pipes][i] = NULL;
-                }
-                else if (*args[pipes][i + 1] == '>') {
-                    redirect_out.now++;
-                    redirect_out.type[redirect_out.now] = STDOUT;
-                    *args[pipes][i + 1] = '\0';
-                    /* 追加重定向 */
-                    if (*(args[pipes][i + 1] + 1) == '>') {
-                        args[pipes][i + 1]++;
-                        redirect_out.type[redirect_out.now] = STDOUT_ADD;
-                    }
-                    /* 消除多余空格 */
-                    do {
-                        args[pipes][i + 1]++;
-                    } while (*args[pipes][i + 1] == ' ' || *args[pipes][i + 1] == '\t');
-
-                    redirect_out.file[redirect_out.now] = args[pipes][i + 1];
-
-                    i++;
-                    args[pipes][i + 1] = args[pipes][i];
-                    args[pipes][i] = NULL;
-                }
-                else if (*(args[pipes][i + 1] + 1) == '>') {
-                    if (*args[pipes][i + 1] == '1') {
-                        redirect_out.now++;
-                        redirect_out.type[redirect_out.now] = STDOUT;
-                    }
-                    else {
-                        redirect_err.now++;
-                        redirect_err.type[redirect_err.now] = STDOUT;
-                    }
-                    *args[pipes][i + 1] = '\0';
-                    /* 追加重定向 */
-                    if (*(args[pipes][i + 1] + 2) == '>') {
-                        args[pipes][i + 1]++;
-                        if (*args[pipes][i + 1] == '1')
-                            redirect_out.type[redirect_out.now] = STDOUT;
-                        else
-                            redirect_err.type[redirect_err.now] = STDOUT;
-                    }
+            if (*args[pipes][i + 1] == '1' && *(args[pipes][i + 1] + 1) == '>') {
+                redirect_out.now++;
+                redirect_out.type[redirect_out.now] = STDOUT;
+                *args[pipes][i + 1] = '\0';
+                /* 追加重定向 */
+                if (*(args[pipes][i + 1] + 2) == '>') {
                     args[pipes][i + 1]++;
-
-                    /* 消除多余空格 */
-                    do {
-                        args[pipes][i + 1]++;
-                    } while (*args[pipes][i + 1] == ' ' || *args[pipes][i + 1] == '\t');
-
-                    if (*args[pipes][i + 1] == '1') {
-                        redirect_out.file[redirect_out.now] = args[pipes][i + 1];
-                    }
-                    else {
-                        redirect_err.file[redirect_err.now] = args[pipes][i + 1];
-                    }
-                    i++;
-                    args[pipes][i + 1] = args[pipes][i];
-                    args[pipes][i] = NULL;
+                    redirect_out.type[redirect_out.now] = STDOUT_ADD;
                 }
+                args[pipes][i + 1]++;
+
+                /* 消除多余空格 */
+                do {
+                    args[pipes][i + 1]++;
+                } while (*args[pipes][i + 1] == ' ' || *args[pipes][i + 1] == '\t');
+
+                redirect_out.file[redirect_out.now] = args[pipes][i + 1];
+
+                i++;
+                args[pipes][i + 1] = args[pipes][i];
+                args[pipes][i] = NULL;
+            }
+            if (*args[pipes][i + 1] == '2' && *(args[pipes][i + 1] + 1) == '>') {
+                redirect_err.now++;
+                redirect_err.type[redirect_err.now] = STDERR;
+                *args[pipes][i + 1] = '\0';
+                /* 追加重定向 */
+                if (*(args[pipes][i + 1] + 2) == '>') {
+                    args[pipes][i + 1]++;
+                    redirect_err.type[redirect_err.now] = STDERR_ADD;
+                }
+                args[pipes][i + 1]++;
+
+                /* 消除多余空格 */
+                do {
+                    args[pipes][i + 1]++;
+                } while (*args[pipes][i + 1] == ' ' || *args[pipes][i + 1] == '\t');
+
+                redirect_err.file[redirect_err.now] = args[pipes][i + 1];
+
+                i++;
+                args[pipes][i + 1] = args[pipes][i];
+                args[pipes][i] = NULL;
+            }
+            if (*args[pipes][i + 1] == '<') {
+                redirect_in.now++;
+                redirect_in.type[redirect_in.now] = STDIN;
+                *args[pipes][i + 1] = '\0';
+                /* 追加重定向 */
+                if (*(args[pipes][i + 1] + 1) == '<') {
+                    args[pipes][i + 1]++;
+                    redirect_in.type[redirect_in.now] = STDIN_ADD;
+                }
+                /* 消除多余空格 */
+                do {
+                    args[pipes][i + 1]++;
+                } while (*args[pipes][i + 1] == ' ' || *args[pipes][i + 1] == '\t');
+
+                redirect_in.file[redirect_in.now] = args[pipes][i + 1];
+
+                i++;
+                args[pipes][i + 1] = args[pipes][i];
+                args[pipes][i] = NULL;
+            }
+            if (*args[pipes][i + 1] == '>') {
+                redirect_out.now++;
+                redirect_out.type[redirect_out.now] = STDOUT;
+                *args[pipes][i + 1] = '\0';
+                /* 追加重定向 */
+                if (*(args[pipes][i + 1] + 1) == '>') {
+                    args[pipes][i + 1]++;
+                    redirect_out.type[redirect_out.now] = STDOUT_ADD;
+                }
+                /* 消除多余空格 */
+                do {
+                    args[pipes][i + 1]++;
+                } while (*args[pipes][i + 1] == ' ' || *args[pipes][i + 1] == '\t');
+
+                redirect_out.file[redirect_out.now] = args[pipes][i + 1];
+
+                i++;
+                args[pipes][i + 1] = args[pipes][i];
+                args[pipes][i] = NULL;
             }
             /* 管道 */
             if (*args[pipes][i+1] == '|') {
@@ -234,15 +247,29 @@ int main() {
                 perror(NULL);
                 continue;
             }
+
+            int fd_err[MAX_REDIRECT];
+            int fd_out[MAX_REDIRECT];
+            mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;            //文件拥有者有读写权限，组成员和其他人只有读权限
+            off_t curr_out, curr_err;
+            for (i = 0; i <= redirect_out.now; i++) {
+                if (redirect_out.type[i] == STDOUT)
+                    fd_out[i] = open(redirect_out.file[i], O_WRONLY | O_CREAT | O_TRUNC, mode);
+                else
+                    fd_out[i] = open(redirect_out.file[i], O_WRONLY | O_CREAT | O_APPEND, mode);
+                curr_out = lseek(fd_out[0], 0, SEEK_END);
+            }
+            for (i = 0; i <= redirect_err.now; i++) {
+                if (redirect_err.type[i] == STDERR)
+                    fd_err[i] = open(redirect_err.file[i], O_WRONLY | O_CREAT | O_TRUNC, mode);
+                else
+                    fd_err[i] = open(redirect_err.file[i], O_WRONLY | O_CREAT | O_APPEND, mode);
+                curr_err = lseek(fd_err[0], 0, SEEK_END);
+            }
+
             pid_t pid = fork();
             if (pid == 0) {
                 /* 子进程 */
-                int fd_err[MAX_REDIRECT];
-                int fd_out[MAX_REDIRECT];
-                char buffer[MAX_BUFFER];
-                ssize_t num_read;
-                mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;            //文件拥有者有读写权限，组成员和其他人只有读权限
-
                 close(fildes[1]);
                 if (redirect_in.now != -1) {
                     dup2(fildes[0], STDIN_FILENO);
@@ -250,22 +277,10 @@ int main() {
                 close(fildes[0]);
 
                 if (redirect_out.now != -1) {
-                    for (i = 0; i <= redirect_out.now; i++) {
-                        if (redirect_out.type[i] == STDOUT)
-                            fd_out[i] = open(redirect_out.file[i], O_WRONLY | O_CREAT | O_TRUNC, mode);
-                        else
-                            fd_out[i] = open(redirect_out.file[i], O_WRONLY | O_CREAT | O_APPEND, mode);
-                    }
                     dup2(fd_out[0], STDOUT_FILENO);
                     close(fd_out[0]);
                 }
                 if (redirect_err.now != -1) {
-                    for (i = 0; i <= redirect_err.now; i++) {
-                        if (redirect_err.type[i] == STDOUT)
-                            fd_err[i] = open(redirect_err.file[i], O_WRONLY | O_CREAT | O_TRUNC, mode);
-                        else
-                            fd_err[i] = open(redirect_err.file[i], O_WRONLY | O_CREAT | O_APPEND, mode);
-                    }
                     dup2(fd_err[0], STDERR_FILENO);
                     close(fd_err[0]);
                 }
@@ -274,22 +289,6 @@ int main() {
                     perror(NULL);
                     exit(EXIT_FAILURE);
                 }
-                for (i = 1; i <= redirect_out.now; i++) {
-                    lseek(fd_out[0], 0, SEEK_SET);
-                    while ((num_read = read(fd_out[0], buffer, MAX_BUFFER)) != 0)
-                        write(fd_out[i], buffer, num_read);
-                    close(fd_out[i]);
-                }
-                for (i = 1; i <= redirect_err.now; i++) {
-                    lseek(fd_err[0], 0, SEEK_SET);
-                    while ((num_read = read(fd_err[0], buffer, MAX_BUFFER)) != 0)
-                        write(fd_err[i], buffer, num_read);
-                    close(fd_err[i]);
-                }
-                if (redirect_out.now != -1)
-                    close(fd_out[0]);
-                if (redirect_err.now != -1)
-                    close(fd_err[0]);
                 exit(EXIT_SUCCESS);
             }
             else if (pid == -1) {
@@ -347,6 +346,31 @@ int main() {
             
             close(fildes[1]);
             wait(NULL);
+            if (redirect_out.now != -1) {
+                close(fd_out[0]);
+                fd_out[0] = open(redirect_out.file[0], O_RDONLY);
+            }
+            for (i = 1; i <= redirect_out.now; i++) {
+                lseek(fd_out[0], curr_out, SEEK_SET);
+                while ((num_read = read(fd_out[0], buffer, MAX_BUFFER)) != 0 && num_read != -1)
+                    write(fd_out[i], buffer, num_read);
+                close(fd_out[i]);
+            }
+
+            if (redirect_err.now != -1) {
+                close(fd_err[0]);
+                fd_err[0] = open(redirect_err.file[0], O_RDONLY);
+            }
+            for (i = 1; i <= redirect_err.now; i++) {
+                lseek(fd_err[0], curr_err, SEEK_SET);
+                while ((num_read = read(fd_err[0], buffer, MAX_BUFFER)) != 0 && num_read != -1) 
+                    write(fd_err[i], buffer, num_read);
+                close(fd_err[i]);
+            }
+            if (redirect_out.now != -1)
+                close(fd_out[0]);
+            if (redirect_err.now != -1)
+                close(fd_err[0]);
             continue;
         }
 
@@ -360,8 +384,57 @@ int main() {
             perror(NULL);
             continue;
         }
+        char buffer[MAX_BUFFER];
+        ssize_t num_read;
+        int fd_err[MAX_REDIRECT];
+        int fd_out[MAX_REDIRECT];
+        mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH; //文件拥有者有读写权限，组成员和其他人只有读权限
+        off_t curr_out, curr_err;
 
-        exec(args, fildes, 0, pipes);
+        fd_err[0] = -1;
+        fd_out[0] = -1;
+        for (i = 0; i <= redirect_out.now; i++) {
+            if (redirect_out.type[i] == STDOUT)
+                fd_out[i] = open(redirect_out.file[i], O_WRONLY | O_CREAT | O_TRUNC, mode);
+            else
+                fd_out[i] = open(redirect_out.file[i], O_WRONLY | O_CREAT | O_APPEND, mode);
+            curr_out = lseek(fd_out[0], 0, SEEK_END);
+        }
+        for (i = 0; i <= redirect_err.now; i++) {
+            if (redirect_err.type[i] == STDERR)
+                fd_err[i] = open(redirect_err.file[i], O_WRONLY | O_CREAT | O_TRUNC, mode);
+            else
+                fd_err[i] = open(redirect_err.file[i], O_WRONLY | O_CREAT | O_APPEND, mode);
+            curr_err = lseek(fd_err[0], 0, SEEK_END);
+        }
+
+        exec(args, fildes, 0, pipes, fd_out[0], fd_err[0]);
+
+        if (redirect_out.now != -1) {
+            close(fd_out[0]);
+            fd_out[0] = open(redirect_out.file[0], O_RDONLY);
+        }
+        for (i = 1; i <= redirect_out.now; i++) {
+            lseek(fd_out[0], curr_out, SEEK_SET);
+            while ((num_read = read(fd_out[0], buffer, MAX_BUFFER)) != 0 && num_read != -1)
+                write(fd_out[i], buffer, num_read);
+            close(fd_out[i]);
+        }
+
+        if (redirect_err.now != -1) {
+            close(fd_err[0]);
+            fd_err[0] = open(redirect_err.file[0], O_RDONLY);
+        }
+        for (i = 1; i <= redirect_err.now; i++) {
+            lseek(fd_err[0], curr_err, SEEK_SET);
+            while ((num_read = read(fd_err[0], buffer, MAX_BUFFER)) != 0 && num_read != -1)
+                write(fd_err[i], buffer, num_read);
+            close(fd_err[i]);
+        }
+        if (redirect_out.now != -1)
+            close(fd_out[0]);
+        if (redirect_err.now != -1)
+            close(fd_err[0]);
     }
 }
 
@@ -371,7 +444,7 @@ int main() {
 * now为当前命令在args中的索引
 * pipes为管道数
 */
-void exec(char *args[][128], int fildes[2], int now, int pipes)
+void exec(char *args[][MAX_CMD/2], int fildes[2], int now, int pipes, int fd_out, int fd_err)
 {
     if (now == 0) {
         pid_t pid = fork();
@@ -394,7 +467,7 @@ void exec(char *args[][128], int fildes[2], int now, int pipes)
             return;
         }
          
-        exec(args, fildes, now + 1, pipes);
+        exec(args, fildes, now + 1, pipes, fd_out, fd_err);
 
         wait(NULL);
         return;
@@ -442,7 +515,7 @@ void exec(char *args[][128], int fildes[2], int now, int pipes)
         close(fildes[0]);                           /* 后面进程不需前一个管道 */
         close(fildes[1]);
 
-        exec(args, fildes_other, now + 1, pipes);
+        exec(args, fildes_other, now + 1, pipes, fd_out, fd_err);
 
         wait(NULL);
         return;
@@ -450,10 +523,20 @@ void exec(char *args[][128], int fildes[2], int now, int pipes)
     else if (now == pipes) {
         pid_t pid = fork();
         if (pid == 0) {
-            close(fildes[1]);                       /* 写入端不用 */
+
+            close(fildes[1]);                           // 写入端不用
             dup2(fildes[0], STDIN_FILENO);
             close(fildes[0]);
-            if (execvp(args[now][0], args[now]) == -1) {
+
+            if (fd_err != -1) {
+                dup2(fd_err, STDERR_FILENO);
+                close(fd_err);
+            }
+            if (fd_out != -1) {
+                dup2(fd_out, STDOUT_FILENO);
+                close(fd_out);
+            }
+            if (execvp(args[pipes][0], args[pipes]) == -1) {
                 /* execvp失败 */
                 perror(NULL);
                 exit(EXIT_FAILURE);
@@ -472,4 +555,33 @@ void exec(char *args[][128], int fildes[2], int now, int pipes)
         wait(NULL);
         return;
     }
+}
+
+void deal_cmd_env(char *cmd)
+{
+    char temp[MAX_CMD];
+    char name[MAX_ENV_NAME];
+    char *temp_name;
+    int i;
+    if (cmd[0] == '~') {
+        strcpy(temp, cmd + 1);
+        if ((temp_name = getenv("HOME")) != NULL)
+            strcpy(cmd, temp_name);
+        else
+            cmd[0] = '\0';
+        strcat(cmd, temp);
+        return;
+    }
+    for (i = 1; cmd[i]; i++) {
+        if (cmd[i] != ' ' && cmd[i] != '\t')
+            name[i - 1] = cmd[i];
+        else
+            break;
+    }
+    strcpy(temp, cmd + i);
+    if ((temp_name = getenv(name)) != NULL)
+        strcpy(cmd, temp_name);
+    else
+        cmd[0] = '\0';
+    strcat(cmd, temp);
 }
