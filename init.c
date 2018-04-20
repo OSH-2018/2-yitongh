@@ -9,19 +9,22 @@
 
 #define MAX_PIPE 10
 #define MAX_REDIRECT 10
+#define MAX_BUFFER 1024
 
 enum Redirect_flag
 {
+    STDIN,
     STDOUT,
     STDERR,
+    STDIN_ADD,
     STDOUT_ADD,
     STDERR_ADD
 };
 
 struct Redirect
 {
-    enum Redirect_flag type[MAX_REDIRECT];      //输出重定向，类型
-    char *file[MAX_REDIRECT];        //输出重定向，文件位置
+    enum Redirect_flag type[MAX_REDIRECT];      //重定向，类型
+    char *file[MAX_REDIRECT];        //重定向，文件位置
     int now; 
 };
 
@@ -35,8 +38,11 @@ int main() {
 
     while (1) {
         int pipes = 0;          //管道数目
-        struct Redirect out;
-        out.now = -1;
+        struct Redirect redirect_out, redirect_in, redirect_err;
+        redirect_out.now = -1;
+        redirect_in.now = -1;
+        redirect_err.now = -1;
+
         fflush(stdout);
 
         /* 提示符 */
@@ -68,43 +74,70 @@ int main() {
                 }
                 
                 /* 管道与重定向 */
-                if (*args[pipes][i+1] == '|' || *args[pipes][i + 1] == '>') {
+                if (*args[pipes][i+1] == '|' || *args[pipes][i + 1] == '>' || *args[pipes][i + 1] == '<') {
                     break;
                 }
             }
             /* 重定向 */
             if (*args[pipes][i + 1] == '1' || *args[pipes][i + 1] == '2'
-                || *args[pipes][i + 1] == '>') {
-                if (*args[pipes][i + 1] == '>') {
-                    out.now++;
-                    out.type[out.now] = STDOUT;
+                || *args[pipes][i + 1] == '>' || *args[pipes][i + 1] == '<') {
+                if (*args[pipes][i + 1] == '<') {
+                    redirect_in.now++;
+                    redirect_in.type[redirect_in.now] = STDIN; 
                     *args[pipes][i + 1] = '\0';
                     /* 追加重定向 */
-                    if (*(args[pipes][i + 1] + 1) == '>') {
+                    if (*(args[pipes][i + 1] + 1) == '<') {
                         args[pipes][i + 1]++;
-                        out.type[out.now] = STDOUT_ADD;
+                        redirect_in.type[redirect_in.now] = STDIN_ADD;
                     }
-
                     /* 消除多余空格 */
                     do {
                         args[pipes][i + 1]++;
                     } while (*args[pipes][i + 1] == ' ' || *args[pipes][i + 1] == '\t');
 
-                    out.file[out.now] = args[pipes][i + 1];
+                    redirect_in.file[redirect_in.now] = args[pipes][i + 1];
+
+                    i++;
+                    args[pipes][i + 1] = args[pipes][i];
+                    args[pipes][i] = NULL;
+                }
+                else if (*args[pipes][i + 1] == '>') {
+                    redirect_out.now++;
+                    redirect_out.type[redirect_out.now] = STDOUT;
+                    *args[pipes][i + 1] = '\0';
+                    /* 追加重定向 */
+                    if (*(args[pipes][i + 1] + 1) == '>') {
+                        args[pipes][i + 1]++;
+                        redirect_out.type[redirect_out.now] = STDOUT_ADD;
+                    }
+                    /* 消除多余空格 */
+                    do {
+                        args[pipes][i + 1]++;
+                    } while (*args[pipes][i + 1] == ' ' || *args[pipes][i + 1] == '\t');
+
+                    redirect_out.file[redirect_out.now] = args[pipes][i + 1];
 
                     i++;
                     args[pipes][i + 1] = args[pipes][i];
                     args[pipes][i] = NULL;
                 }
                 else if (*(args[pipes][i + 1] + 1) == '>') {
-
-                    out.now++;
-                    out.type[out.now] = *args[pipes][i + 1] == '1' ? STDOUT : STDERR;
+                    if (*args[pipes][i + 1] == '1') {
+                        redirect_out.now++;
+                        redirect_out.type[redirect_out.now] = STDOUT;
+                    }
+                    else {
+                        redirect_err.now++;
+                        redirect_err.type[redirect_err.now] = STDOUT;
+                    }
                     *args[pipes][i + 1] = '\0';
                     /* 追加重定向 */
                     if (*(args[pipes][i + 1] + 2) == '>') {
                         args[pipes][i + 1]++;
-                        out.type[out.now] = out.type[out.now] == STDOUT ? STDOUT_ADD : STDERR_ADD;
+                        if (*args[pipes][i + 1] == '1')
+                            redirect_out.type[redirect_out.now] = STDOUT;
+                        else
+                            redirect_err.type[redirect_err.now] = STDOUT;
                     }
                     args[pipes][i + 1]++;
 
@@ -112,8 +145,13 @@ int main() {
                     do {
                         args[pipes][i + 1]++;
                     } while (*args[pipes][i + 1] == ' ' || *args[pipes][i + 1] == '\t');
-                    
-                    out.file[out.now] = args[pipes][i + 1];
+
+                    if (*args[pipes][i + 1] == '1') {
+                        redirect_out.file[redirect_out.now] = args[pipes][i + 1];
+                    }
+                    else {
+                        redirect_err.file[redirect_err.now] = args[pipes][i + 1];
+                    }
                     i++;
                     args[pipes][i + 1] = args[pipes][i];
                     args[pipes][i] = NULL;
@@ -187,27 +225,71 @@ int main() {
                 return 0;
 
             /* 外部命令 */
+            int fildes[2];
+            int status;
+
+            status = pipe(fildes);
+            if (status == -1) {
+                /* 创建管道失败 */
+                perror(NULL);
+                continue;
+            }
             pid_t pid = fork();
             if (pid == 0) {
                 /* 子进程 */
-                for (i = 0; i <= out.now; i++) {
-                    mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;            //文件拥有者有读写权限，组成员和其他人只有读权限
-                    int fd;
-                    if (out.type[i] == STDERR || out.type[i] == STDOUT)
-                        fd = open(out.file[i], O_WRONLY | O_CREAT | O_TRUNC, mode);
-                    else
-                        fd = open(out.file[i], O_WRONLY | O_CREAT | O_APPEND, mode);
-                    if (out.type[i] == STDOUT || out.type[i] == STDOUT_ADD)
-                        dup2(fd, STDOUT_FILENO);
-                    else
-                        dup2(fd, STDERR_FILENO);
-                    close(fd);
+                int fd_err[MAX_REDIRECT];
+                int fd_out[MAX_REDIRECT];
+                char buffer[MAX_BUFFER];
+                ssize_t num_read;
+                mode_t mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;            //文件拥有者有读写权限，组成员和其他人只有读权限
+
+                close(fildes[1]);
+                if (redirect_in.now != -1) {
+                    dup2(fildes[0], STDIN_FILENO);
+                }    
+                close(fildes[0]);
+
+                if (redirect_out.now != -1) {
+                    for (i = 0; i <= redirect_out.now; i++) {
+                        if (redirect_out.type[i] == STDOUT)
+                            fd_out[i] = open(redirect_out.file[i], O_WRONLY | O_CREAT | O_TRUNC, mode);
+                        else
+                            fd_out[i] = open(redirect_out.file[i], O_WRONLY | O_CREAT | O_APPEND, mode);
+                    }
+                    dup2(fd_out[0], STDOUT_FILENO);
+                    close(fd_out[0]);
+                }
+                if (redirect_err.now != -1) {
+                    for (i = 0; i <= redirect_err.now; i++) {
+                        if (redirect_err.type[i] == STDOUT)
+                            fd_err[i] = open(redirect_err.file[i], O_WRONLY | O_CREAT | O_TRUNC, mode);
+                        else
+                            fd_err[i] = open(redirect_err.file[i], O_WRONLY | O_CREAT | O_APPEND, mode);
+                    }
+                    dup2(fd_err[0], STDERR_FILENO);
+                    close(fd_err[0]);
                 }
                 if (execvp(args[pipes][0], args[pipes]) == -1) {
                     /* execvp失败 */
                     perror(NULL);
                     exit(EXIT_FAILURE);
                 }
+                for (i = 1; i <= redirect_out.now; i++) {
+                    lseek(fd_out[0], 0, SEEK_SET);
+                    while ((num_read = read(fd_out[0], buffer, MAX_BUFFER)) != 0)
+                        write(fd_out[i], buffer, num_read);
+                    close(fd_out[i]);
+                }
+                for (i = 1; i <= redirect_err.now; i++) {
+                    lseek(fd_err[0], 0, SEEK_SET);
+                    while ((num_read = read(fd_err[0], buffer, MAX_BUFFER)) != 0)
+                        write(fd_err[i], buffer, num_read);
+                    close(fd_err[i]);
+                }
+                if (redirect_out.now != -1)
+                    close(fd_out[0]);
+                if (redirect_err.now != -1)
+                    close(fd_err[0]);
                 exit(EXIT_SUCCESS);
             }
             else if (pid == -1) {
@@ -216,6 +298,54 @@ int main() {
                 continue;
             }
             /* 父进程 */
+            close(fildes[0]);
+            char template[] = "./XXXXXX";
+            int tmp_fd;
+            if (redirect_in.now != -1) {
+                tmp_fd = mkstemp(template);
+                if (tmp_fd == -1) {
+                    perror(NULL);
+                    exit(0);
+                }
+                unlink(template);
+            }
+            char buffer[MAX_BUFFER];
+            ssize_t num_read;
+            for (i = 0; i <= redirect_in.now; i++) {
+                int fd;
+                if (redirect_in.type[i] == STDIN) {
+                    fd = open(redirect_in.file[i], O_RDONLY);
+                    if (fd == -1) {
+                        perror(NULL);
+                        exit(EXIT_FAILURE);
+                    }
+                    while ((num_read = read(fd, buffer, MAX_BUFFER)) != 0)
+                        write(tmp_fd, buffer, num_read);
+                    close(fd);
+                }
+                else {
+                    while (1) {
+                        num_read = read(STDIN_FILENO, buffer, MAX_BUFFER);
+                        if (num_read == -1) {
+                            perror(NULL);
+                            break;
+                        }
+                        buffer[num_read - 1] = '\0';
+                        if (strcmp(buffer, redirect_in.file[i]) == 0)
+                            break;
+                        buffer[num_read - 1] = '\n';
+                        write(tmp_fd, buffer, num_read);
+                    }
+                }
+            }
+            if (redirect_in.now != -1) {
+                lseek(tmp_fd, 0, SEEK_SET);
+                while ((num_read = read(tmp_fd, buffer, MAX_BUFFER)) != 0)
+                    write(fildes[1], buffer, num_read);
+                close(tmp_fd);
+            }
+            
+            close(fildes[1]);
             wait(NULL);
             continue;
         }
